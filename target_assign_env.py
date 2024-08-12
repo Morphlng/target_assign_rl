@@ -1,11 +1,7 @@
-import logging
-
 import gymnasium as gym
 import numpy as np
 from pettingzoo import AECEnv
 from pettingzoo.utils import agent_selector, wrappers
-
-logger = logging.getLogger(__name__)
 
 
 class TaskAllocationEnv(AECEnv):
@@ -18,6 +14,8 @@ class TaskAllocationEnv(AECEnv):
         num_threats=20,
         render_mode=None,
         dict_obs=False,
+        threat_levels=None,
+        threat_probs=None,
     ):
         super().__init__()
         self.max_drones = max_drones
@@ -25,6 +23,14 @@ class TaskAllocationEnv(AECEnv):
         self.num_threats = num_threats
         self.render_mode = render_mode
         self.dict_obs = dict_obs
+        self._threat_levels = threat_levels or [0, 0.2, 0.4, 0.6, 0.8]
+        self._threat_probs = threat_probs
+        if self._threat_probs is not None and (
+            len(self._threat_probs) != len(self._threat_levels)
+        ):
+            raise ValueError(
+                "Length of threat_probs must be equal to length of threat_levels"
+            )
 
         self.possible_agents = [f"drone_{i}" for i in range(self.max_drones)]
         self.agent_name_mapping = dict(
@@ -87,10 +93,16 @@ class TaskAllocationEnv(AECEnv):
         # Random initialize threats
         self.threat_levels = np.zeros(self.num_threats)
         while not self.threat_levels.any():
-            raw_probs = np.random.random(5)
-            threat_probs = raw_probs / np.sum(raw_probs)
+            if self._threat_probs is None:
+                raw_probs = np.random.random(5)
+                threat_probs = raw_probs / np.sum(raw_probs)
+            else:
+                threat_probs = self._threat_probs
+
             self.threat_levels = np.random.choice(
-                [0, 0.2, 0.4, 0.6, 0.8], size=self.num_threats, p=threat_probs
+                self._threat_levels,
+                size=self.num_threats,
+                p=threat_probs,
             )
 
         self.threat_levels = np.sort(self.threat_levels)[::-1]
@@ -170,13 +182,13 @@ class TaskAllocationEnv(AECEnv):
 
     def _simulate_engagement(self):
         self.successful_engagements = np.zeros(self.num_threats, dtype=bool)
+        self.drone_cost = np.zeros(self.num_threats, dtype=int)
         drone_iter = iter(self.agents)
         drone = next(drone_iter)
 
-        logger.debug("Simulating engagement for episode %d", self.episode_count)
         for i in range(self.num_threats):
             if self.actual_threats[i]:
-                for j in range(self.current_allocation[i]):
+                for _ in range(self.current_allocation[i]):
                     while drone and (
                         self.truncations[drone] or self.terminations[drone]
                     ):
@@ -184,46 +196,60 @@ class TaskAllocationEnv(AECEnv):
 
                     if drone is not None:
                         self.terminations[drone] = True
-                        if np.random.random() < 0.8:
+                        self.drone_cost[i] += 1
+                        if np.random.random() < 0.7:
                             self.successful_engagements[i] = True
-                            logger.debug(
-                                "Cost %d drones to destroy threat %d", j + 1, i
-                            )
                             break
 
     def _calculate_rewards(self):
-        # coverage and success rate
-        weighted_coverage = np.sum(
-            self.current_allocation * self.threat_levels
-        ) / np.sum(self.threat_levels)
-        success_rate = np.sum(self.successful_engagements) / (
-            self.num_actual_threat + 1e-8
+        covered_threats = (self.current_allocation > 0)[self.actual_threats]
+        coverage = (
+            (np.sum(covered_threats) / self.num_actual_threat)
+            if self.num_actual_threat > 0
+            else 0
         )
 
-        # kill-death ratio
+        # 1. Weighted coverage
+        weighted_coverage = np.sum(
+            covered_threats * self.threat_levels[self.actual_threats]
+        ) / (np.sum(self.threat_levels[self.actual_threats]) + 1e-8)
+
+        # 2. Success rate
         threats_destroyed = np.sum(self.successful_engagements)
         drones_lost = sum(self.terminations.values())
-        destroy_reward = threats_destroyed * 0.5
+        success_rate = (
+            (threats_destroyed / self.num_actual_threat)
+            if self.num_actual_threat > 0
+            else 0
+        )
 
-        # remaining threat
-        remaining_threat = self.num_actual_threat - threats_destroyed
+        # 3. Remain punishment
+        remaining_penalty = np.sum(
+            self.threat_levels[self.actual_threats & ~self.successful_engagements]
+        ) / (np.sum(self.threat_levels[self.actual_threats]) + 1e-8)
+
+        # 4. Redundancy penalty
+        redundancy = np.maximum(
+            self.current_allocation[self.successful_engagements]
+            - self.drone_cost[self.successful_engagements]
+            - 1,
+            0,
+        )
+        redundancy_penalty = np.sum(redundancy / (self.current_allocation[self.successful_engagements] + 1e-8)) 
 
         # overall reward
         total_reward = (
-            weighted_coverage * 2
-            + success_rate
-            + destroy_reward
-            - remaining_threat * 0.5
+            weighted_coverage + success_rate - remaining_penalty - redundancy_penalty
         )
 
         self.infos = {
             agent: {
-                "coverage": weighted_coverage,
-                "success_rate": success_rate,
+                "coverage": coverage,
+                "success_rate": threats_destroyed / (self.num_actual_threat + 1e-8),
                 "threat_destroyed": threats_destroyed,
                 "drone_lost": drones_lost,
                 "kd_ratio": threats_destroyed / (drones_lost + 1e-8),
-                "remaining_threat": remaining_threat,
+                "num_remaining_threat": self.num_actual_threat - threats_destroyed,
             }
             for agent in self.agents
         }
@@ -246,11 +272,6 @@ def raw_env(config: dict = None) -> TaskAllocationEnv:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s %(levelname)s %(module)s %(funcName)s: "%(message)s"',
-        datefmt="%d-%m-%y %H:%M:%S",
-    )
     env = raw_env()
 
     for _ in range(20):
