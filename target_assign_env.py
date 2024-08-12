@@ -7,26 +7,37 @@ from pettingzoo.utils import agent_selector, wrappers
 class TaskAllocationEnv(AECEnv):
     metadata = {"render_modes": ["human"], "name": "task_allocation_v0"}
 
-    def __init__(
-        self,
-        min_drones=16,
-        max_drones=20,
-        num_threats=20,
-        render_mode=None,
-        dict_obs=False,
-        threat_levels=None,
-        threat_probs=None,
-    ):
+    def __init__(self, config: dict = None):
+        """Task allocation environment modelled in Agent-Environment-Cycle (AEC) paradigm.
+
+        Args:
+            config (dict, optional): Configuration dictionary. Available keys are as follows.
+
+            - min_drones (int) : The minimal amount of drones per episode. Defaults to 20.
+            - max_drones (int) : The maximal amount of drones per episode. Defaults to 20.
+            - num_threats (int) : The maximal amount of threats per episode. Defaults to 20.
+            - attack_prob (float) : The probability of a drone successfully attacking a threat. Defaults to 0.7.
+            - dict_obs (bool) : Type of observation. Defaults to False (array).
+            - possible_level (list) : List of possible threat probabilities. Defaults to [0, 0.2, 0.4, 0.6, 0.8].
+            - threat_dist (list) : List of threat distribution. Defaults to random.
+            - render_mode (str) : Rendering mode. Not implemented yet.
+
+        Raises:
+            ValueError: Length of threat_probs must be equal to length of threat_levels
+        """
         super().__init__()
-        self.max_drones = max_drones
-        self.min_drones = min_drones
-        self.num_threats = num_threats
-        self.render_mode = render_mode
-        self.dict_obs = dict_obs
-        self._threat_levels = threat_levels or [0, 0.2, 0.4, 0.6, 0.8]
-        self._threat_probs = threat_probs
-        if self._threat_probs is not None and (
-            len(self._threat_probs) != len(self._threat_levels)
+        config = config or {}
+
+        self.max_drones = config.get("max_drones", 20)
+        self.min_drones = config.get("min_drones", 20)
+        self.num_threats = config.get("num_threats", 20)
+        self.attack_prob = config.get("attack_prob", 0.7)
+        self.render_mode = config.get("render_mode", "human")
+        self.dict_obs = config.get("dict_obs", False)
+        self.possible_level = config.get("possible_level", [0, 0.2, 0.4, 0.6, 0.8])
+        self.threat_dist = config.get("threat_dist", None)
+        if self.threat_dist is not None and (
+            len(self.threat_dist) != len(self.possible_level)
         ):
             raise ValueError(
                 "Length of threat_probs must be equal to length of threat_levels"
@@ -80,6 +91,9 @@ class TaskAllocationEnv(AECEnv):
         self.num_drones = 0
 
     def reset(self, seed=None, options=None):
+        if seed is not None:
+            np.random.seed(seed)
+
         # Reset environment state
         self.episode_count += 1
         self.num_drones = np.random.randint(self.min_drones, self.max_drones + 1)
@@ -88,19 +102,19 @@ class TaskAllocationEnv(AECEnv):
         self._cumulative_rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
-        self.infos = {agent: None for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
 
         # Random initialize threats
         self.threat_levels = np.zeros(self.num_threats)
         while not self.threat_levels.any():
-            if self._threat_probs is None:
+            if self.threat_dist is None:
                 raw_probs = np.random.random(5)
                 threat_probs = raw_probs / np.sum(raw_probs)
             else:
-                threat_probs = self._threat_probs
+                threat_probs = self.threat_dist
 
             self.threat_levels = np.random.choice(
-                self._threat_levels,
+                self.possible_level,
                 size=self.num_threats,
                 p=threat_probs,
             )
@@ -127,7 +141,6 @@ class TaskAllocationEnv(AECEnv):
 
         # Check if all drones have been allocated
         if self._agent_selector.is_last():
-            # Simulate engagement and calculate rewards
             self._simulate_engagement()
             self.rewards = self._calculate_rewards()
             self.truncations = {agent: True for agent in self.agents}
@@ -197,7 +210,7 @@ class TaskAllocationEnv(AECEnv):
                     if drone is not None:
                         self.terminations[drone] = True
                         self.drone_cost[i] += 1
-                        if np.random.random() < 0.7:
+                        if np.random.random() < self.attack_prob:
                             self.successful_engagements[i] = True
                             break
 
@@ -235,7 +248,12 @@ class TaskAllocationEnv(AECEnv):
             - 1,
             0,
         )
-        redundancy_penalty = np.sum(redundancy / (self.current_allocation[self.successful_engagements] + 1e-8)) 
+        redundancy_penalty = np.sum(
+            redundancy / (self.current_allocation[self.successful_engagements] + 1e-8)
+        )
+
+        # 5. Zero prob allocation penalty (enable only if no action_mask)
+        # zero_penalty = np.sum(self.current_allocation * (self.threat_levels == 0))
 
         # overall reward
         total_reward = (
@@ -245,7 +263,7 @@ class TaskAllocationEnv(AECEnv):
         self.infos = {
             agent: {
                 "coverage": coverage,
-                "success_rate": threats_destroyed / (self.num_actual_threat + 1e-8),
+                "success_rate": success_rate,
                 "threat_destroyed": threats_destroyed,
                 "drone_lost": drones_lost,
                 "kd_ratio": threats_destroyed / (drones_lost + 1e-8),
@@ -264,8 +282,15 @@ class TaskAllocationEnv(AECEnv):
 
 
 def raw_env(config: dict = None) -> TaskAllocationEnv:
-    config = config or {}
-    env = TaskAllocationEnv(**config)
+    """Create an environment with the given configuration.
+
+    Args:
+        config (dict, optional): Configuration dictionary. See environment documentation for details.
+
+    Returns:
+        TaskAllocationEnv: Wrapped environment.
+    """
+    env = TaskAllocationEnv(config)
     env = wrappers.AssertOutOfBoundsWrapper(env)
     env = wrappers.OrderEnforcingWrapper(env)
     return env
