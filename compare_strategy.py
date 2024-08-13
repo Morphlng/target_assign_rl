@@ -50,7 +50,7 @@ def simulate_drone_lost(
             "actual_threats": env.actual_threats.copy(),
             "num_actual_threat": env.num_actual_threat,
         }
-        episode_data["assignments"] = env.current_allocation.copy()
+        episode_data["assignments"] = env.actual_allocation.copy()
         episode_data["drone_cost"] = env.drone_cost.copy()
         episode_data["successful_engagements"] = env.successful_engagements.copy()
         episode_data["final_reward"] = original_reward
@@ -90,7 +90,7 @@ def simulate_drone_lost(
             "actual_threats": env2.actual_threats.copy(),
             "num_actual_threat": env2.num_actual_threat,
         }
-        new_data["assignments"] = env2.current_allocation.copy()
+        new_data["assignments"] = env2.actual_allocation.copy()
         new_data["drone_cost"] = env2.drone_cost.copy()
         new_data["successful_engagements"] = env2.successful_engagements.copy()
         new_data["final_reward"] = new_reward
@@ -107,7 +107,6 @@ def generate_threat_heatmap_data(collected_data):
     num_threats = len(collected_data[0]["threat_levels"])
     num_episodes = len(collected_data)
 
-    # Initialize arrays to store data
     threat_levels_sum = np.zeros(num_threats)
     assignments_sum = np.zeros(num_threats)
     successful_engagements_cnt = np.zeros(num_threats)
@@ -177,13 +176,9 @@ def generate_threat_heatmap_data(collected_data):
 
 
 def plot_threat_heatmap(collected_data, show=False, path=None):
-    # 生成热力图数据
     heatmap_data = generate_threat_heatmap_data(collected_data)
 
-    # 设置图形大小
     plt.figure(figsize=(20, 12))
-
-    # 创建热力图
     sns.heatmap(
         heatmap_data,
         annot=True,
@@ -200,22 +195,17 @@ def plot_threat_heatmap(collected_data, show=False, path=None):
         ],
     )
 
-    # 设置标题和标签
     plt.title("Threat Position Heatmap", fontsize=16)
     plt.xlabel("Threat Position", fontsize=12)
     plt.ylabel("Metrics", fontsize=12)
-
-    # 调整布局
     plt.tight_layout()
     plt.savefig(path or "threat_position_heatmap.png")
 
-    # 显示图形
     if show:
         plt.show()
 
 
 def analyze_multi_round_statistics(collected_data, show=False):
-    # 创建一个DataFrame来存储每个回合的数据
     df = pd.DataFrame(
         [
             {
@@ -232,7 +222,6 @@ def analyze_multi_round_statistics(collected_data, show=False):
         ]
     )
 
-    # 计算总体统计数据
     overall_stats = pd.DataFrame(
         {
             "Coverage Rate": df["coverage"].mean(),
@@ -243,7 +232,6 @@ def analyze_multi_round_statistics(collected_data, show=False):
         index=["Overall"],
     )
 
-    # 按威胁度进行分组统计
     threat_level_stats = []
     possible_levels = collected_data[0]["possible_level"]
 
@@ -277,22 +265,16 @@ def analyze_multi_round_statistics(collected_data, show=False):
             )
 
     threat_level_df = pd.DataFrame(threat_level_stats).set_index("Threat Level")
-
-    # 打印结果
     print("Overall Statistics:")
     print(overall_stats)
     print("\nStatistics by Threat Level:")
     print(threat_level_df)
 
-    # 创建图表
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
-
-    # 总体统计柱状图
     overall_stats.T.plot(kind="bar", ax=ax1, ylabel="Value")
     ax1.set_title("Overall Statistics")
     ax1.set_xlabel("")
 
-    # 按威胁度统计的堆叠柱状图
     threat_level_df[["Avg Destroyed", "Avg Remaining"]].plot(
         kind="bar", stacked=True, ax=ax2
     )

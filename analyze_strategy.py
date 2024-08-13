@@ -30,7 +30,7 @@ def inference_and_collect_data(
             env.step(action)
 
         _, reward, _, _, info = env.last()
-        episode_data["assignments"] = env.current_allocation.copy()
+        episode_data["assignments"] = env.actual_allocation.copy()
         episode_data["successful_engagements"] = env.successful_engagements.copy()
         episode_data["final_reward"] = reward
         episode_data["coverage"] = info["coverage"]
@@ -52,21 +52,19 @@ def generate_threat_heatmap_data(collected_data):
     # Initialize arrays to store data
     threat_levels_sum = np.zeros(num_threats)
     assignments_sum = np.zeros(num_threats)
-    successful_engagements_sum = np.zeros(num_threats)
+    successful_engagements_cnt = np.zeros(num_threats)
     actual_threats_sum = np.zeros(num_threats)
-    drone_cost_sum = np.zeros(num_threats)
-    assignments_when_actual_sum = np.zeros(num_threats)
+    drone_cost_success_sum = np.zeros(num_threats)
+    assignments_when_actual_cnt = np.zeros(num_threats)
 
     for episode_data in collected_data:
         threat_levels_sum += episode_data["threat_levels"]
         assignments_sum += episode_data["assignments"]
-        successful_engagements_sum += episode_data["successful_engagements"]
+        successful_engagements_cnt += episode_data["successful_engagements"]
         actual_threats_sum += episode_data["actual_threats"]
-        drone_cost_sum += episode_data["drone_cost"]
-        assignments_when_actual = (
-            episode_data["assignments"] * episode_data["actual_threats"]
-        )
-        assignments_when_actual_sum += assignments_when_actual
+        drone_cost_success_sum += episode_data["drone_cost"] * episode_data["successful_engagements"]
+        assignments_when_actual = (episode_data["assignments"] > 0) * episode_data["actual_threats"]
+        assignments_when_actual_cnt += assignments_when_actual
 
     # Calculate averages and rates
     threat_levels_avg = threat_levels_sum / num_episodes
@@ -74,31 +72,31 @@ def generate_threat_heatmap_data(collected_data):
 
     # Success rate: successful engagements / (actual threats with assignments)
     success_rate = np.divide(
-        successful_engagements_sum,
-        assignments_when_actual_sum,
-        out=np.zeros_like(successful_engagements_sum),
-        where=assignments_when_actual_sum != 0,
+        successful_engagements_cnt,
+        assignments_when_actual_cnt,
+        out=np.zeros_like(successful_engagements_cnt),
+        where=assignments_when_actual_cnt != 0,
     )
 
     # Average drones used for successful engagements
     avg_drones_for_success = np.divide(
-        drone_cost_sum,
-        successful_engagements_sum,
-        out=np.zeros_like(drone_cost_sum),
-        where=successful_engagements_sum != 0,
+        drone_cost_success_sum,
+        successful_engagements_cnt,
+        out=np.zeros_like(drone_cost_success_sum),
+        where=successful_engagements_cnt != 0,
     )
 
     # Failure rate: (actual threats with assignments - successful engagements) / (actual threats with assignments)
     failure_rate = np.divide(
-        assignments_when_actual_sum - successful_engagements_sum,
-        assignments_when_actual_sum,
-        out=np.zeros_like(assignments_when_actual_sum),
-        where=assignments_when_actual_sum != 0,
+        assignments_when_actual_cnt - successful_engagements_cnt,
+        assignments_when_actual_cnt,
+        out=np.ones_like(assignments_when_actual_cnt),
+        where=assignments_when_actual_cnt != 0,
     )
 
     # Coverage rate: (actual threats with assignments) / (actual threats)
     coverage_rate = np.divide(
-        assignments_when_actual_sum,
+        assignments_when_actual_cnt,
         actual_threats_sum,
         out=np.zeros_like(actual_threats_sum),
         where=actual_threats_sum != 0,
