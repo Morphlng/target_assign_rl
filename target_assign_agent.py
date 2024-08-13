@@ -49,6 +49,7 @@ class IQLAgent:
         epsilon_start=1.0,
         epsilon_end=0.01,
         epsilon_decay=0.995,
+        _limit=3,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -60,6 +61,9 @@ class IQLAgent:
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
+
+        self._limit = _limit
+        self._current_allocation = np.zeros(20)
 
     def save_checkpoint(self, episode, path="checkpoints"):
         if not os.path.exists(path):
@@ -92,12 +96,25 @@ class IQLAgent:
         print(f"Checkpoint loaded from episode {checkpoint['episode']}")
         return checkpoint["episode"]
 
+    def predict(self, state, action_mask):
+        threat_levels, pre_allocation, current_allocation = state.reshape([3, -1])
+        if np.sum(self._current_allocation) == np.sum(pre_allocation):
+            self._current_allocation = np.zeros(len(threat_levels))
+
+        if self._limit is not None:
+            redundant_mask = self._current_allocation >= self._limit
+            action_mask = action_mask & ~redundant_mask
+
+        with torch.no_grad():
+            q_values = self.q_network(torch.FloatTensor(state)).numpy()
+            q_values[~action_mask] = -np.inf
+            action = np.argmax(q_values)
+            self._current_allocation[action] += 1
+            return action
+
     def select_action(self, state, action_mask):
         if random.random() > self.epsilon:
-            with torch.no_grad():
-                q_values = self.q_network(torch.FloatTensor(state)).numpy()
-                q_values[~action_mask] = -np.inf
-                return np.argmax(q_values)
+            return self.predict(state, action_mask)
         else:
             valid_actions = np.where(action_mask)[0]
             return np.random.choice(valid_actions)
@@ -137,7 +154,7 @@ class RuleAgent:
         self.pre_allocation = None
         self.index = 0
 
-    def select_action(self, state, action_mask):
+    def predict(self, state, action_mask):
         threat_levels, pre_allocation, current_allocation = state.reshape([3, -1])
         if not np.array_equal(self.pre_allocation, pre_allocation) or np.array_equal(
             self.current_allocation, pre_allocation
@@ -151,6 +168,17 @@ class RuleAgent:
             self.index += 1
 
     def reset(self, allocation):
-        self.pre_allocation = allocation
+        self.pre_allocation = allocation.copy()
         self.current_allocation = np.zeros(self.max_threats)
         self.index = 0
+
+
+class RandomAgent:
+    def __init__(self, num_threats=20, seed=None):
+        self.num_threats = num_threats
+        self.seed = seed
+        if seed is not None:
+            np.random.seed(seed)
+
+    def predict(self, state, action_mask):
+        return np.random.choice(np.where(action_mask)[0])

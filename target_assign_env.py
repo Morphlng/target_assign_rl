@@ -216,18 +216,18 @@ class TaskAllocationEnv(AECEnv):
 
     def _calculate_rewards(self):
         covered_threats = (self.current_allocation > 0)[self.actual_threats]
-        coverage = (
+        actual_coverage = (
             (np.sum(covered_threats) / self.num_actual_threat)
             if self.num_actual_threat > 0
-            else 0
+            else 1
         )
 
-        # 1. Weighted coverage
+        # coverage by threats
         weighted_coverage = np.sum(
-            covered_threats * self.threat_levels[self.actual_threats]
-        ) / (np.sum(self.threat_levels[self.actual_threats]) + 1e-8)
+            self.current_allocation * self.threat_levels
+        ) / np.sum(self.threat_levels)
 
-        # 2. Success rate
+        # success rate
         threats_destroyed = np.sum(self.successful_engagements)
         drones_lost = sum(self.terminations.values())
         success_rate = (
@@ -236,33 +236,22 @@ class TaskAllocationEnv(AECEnv):
             else 0
         )
 
-        # 3. Remain punishment
+        # kill reward by threats
+        destroy_reward = np.sum(self.successful_engagements * self.threat_levels)
+
+        # remain penalty
         remaining_penalty = np.sum(
             self.threat_levels[self.actual_threats & ~self.successful_engagements]
         ) / (np.sum(self.threat_levels[self.actual_threats]) + 1e-8)
 
-        # 4. Redundancy penalty
-        redundancy = np.maximum(
-            self.current_allocation[self.successful_engagements]
-            - self.drone_cost[self.successful_engagements]
-            - 1,
-            0,
-        )
-        redundancy_penalty = np.sum(
-            redundancy / (self.current_allocation[self.successful_engagements] + 1e-8)
-        )
-
-        # 5. Zero prob allocation penalty (enable only if no action_mask)
-        # zero_penalty = np.sum(self.current_allocation * (self.threat_levels == 0))
-
         # overall reward
         total_reward = (
-            weighted_coverage + success_rate - remaining_penalty - redundancy_penalty
+            0.75 * weighted_coverage + success_rate + destroy_reward - remaining_penalty
         )
 
         self.infos = {
             agent: {
-                "coverage": coverage,
+                "coverage": actual_coverage,
                 "success_rate": success_rate,
                 "threat_destroyed": threats_destroyed,
                 "drone_lost": drones_lost,

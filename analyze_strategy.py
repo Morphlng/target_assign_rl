@@ -1,12 +1,13 @@
 import argparse
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from target_assign_agent import RuleAgent, IQLAgent
-from target_assign_env import raw_env, TaskAllocationEnv
+from target_assign_agent import IQLAgent, RuleAgent
+from target_assign_env import TaskAllocationEnv, raw_env
 
 
 def inference_and_collect_data(
@@ -25,7 +26,7 @@ def inference_and_collect_data(
         for i, agent in enumerate(env.agents):
             state, _, te, tr, _ = env.last()
             action_mask = env.action_mask(agent)
-            action = trained_agent.select_action(state, action_mask)
+            action = trained_agent.predict(state, action_mask)
             env.step(action)
 
         _, reward, _, _, info = env.last()
@@ -164,6 +165,8 @@ def analyze_multi_round_statistics(collected_data, show=False):
                 "total_threats": d["num_actual_threat"],
                 "threat_levels": d["threat_levels"],
                 "actual_threats": d["actual_threats"],
+                "assignments": d["assignments"],
+                "successful_engagements": d["successful_engagements"],
             }
             for d in collected_data
         ]
@@ -191,9 +194,9 @@ def analyze_multi_round_statistics(collected_data, show=False):
             level_data.append(
                 {
                     "threats": level_threats.sum(),
+                    "covered": (level_threats & (row["assignments"] > 0)).sum(),
                     "destroyed": (
-                        level_threats
-                        & (row["threat_levels"] <= row["threats_destroyed"])
+                        level_threats & (row["successful_engagements"])
                     ).sum(),
                 }
             )
@@ -203,8 +206,8 @@ def analyze_multi_round_statistics(collected_data, show=False):
             threat_level_stats.append(
                 {
                     "Threat Level": level,
-                    "Coverage Rate": level_df["destroyed"].sum()
-                    / level_df["threats"].sum(),
+                    "Coverage": level_df["covered"].sum() / level_df["threats"].sum(),
+                    "Success": level_df["destroyed"].sum() / level_df["threats"].sum(),
                     "Avg Threats": level_df["threats"].mean(),
                     "Avg Destroyed": level_df["destroyed"].mean(),
                     "Avg Remaining": (
@@ -248,12 +251,18 @@ def analyze_multi_round_statistics(collected_data, show=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_episodes", type=int, default=1000)
-    parser.add_argument("--agent", type=str, default="checkpoint_A20.pth")
+    parser.add_argument("--agent", type=str, default="rule")
     parser.add_argument("--show", action="store_true")
 
     args = parser.parse_args()
 
-    env = raw_env()
+    env = raw_env(
+        dict(
+            min_drones=20,
+            possible_level=[0, 0.1, 0.4, 0.8],
+            threat_dist=[0.15, 0.35, 0.35, 0.15],
+        )
+    )
     env.reset()
     if args.agent == "rule":
         agent = RuleAgent()
@@ -261,7 +270,7 @@ if __name__ == "__main__":
     else:
         agent = IQLAgent(env.state().shape[0], env.action_space(env.agents[0]).n)
         agent.load_checkpoint(args.agent)
-        agent_name = f"IQL Agent ({args.agent})"
+        agent_name = f"IQL-Agent_{os.path.basename(args.agent).split('.')[0]}"
 
     collected_data = inference_and_collect_data(env, agent, args.num_episodes)
     plot_threat_heatmap(
