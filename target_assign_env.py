@@ -1,10 +1,33 @@
+import colorsys
+import os
 import sys
+import time
 
 import gymnasium as gym
 import numpy as np
 import pygame
 from pettingzoo import AECEnv
 from pettingzoo.utils import agent_selector, wrappers
+
+
+def get_threat_color(threat_level):
+    if threat_level == 0:
+        return (240, 240, 240)
+
+    hue = 0.15 - (threat_level * 0.15)
+    saturation = 0.5 + (threat_level * 0.5)
+    r, g, b = colorsys.hsv_to_rgb(hue, saturation, 1.0)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+def handle_events():
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            return True
+    return False
 
 
 class TaskAllocationEnv(AECEnv):
@@ -29,13 +52,14 @@ class TaskAllocationEnv(AECEnv):
             ValueError: Length of threat_probs must be equal to length of threat_levels
         """
         super().__init__()
-        config = config or {}
+        self.timestamps = time.strftime("%y%m%d_%H%M", time.localtime())
+        self.config = config or {}
 
         self.max_drones = config.get("max_drones", 20)
         self.min_drones = config.get("min_drones", 20)
         self.num_threats = config.get("num_threats", 20)
         self.attack_prob = config.get("attack_prob", 0.7)
-        self.render_mode = config.get("render_mode", "human")
+        self.render_config = config.get("render_config", {})
         self.dict_obs = config.get("dict_obs", False)
         self.possible_level = config.get("possible_level", [0, 0.2, 0.4, 0.6, 0.8])
         self.threat_dist = config.get("threat_dist", None)
@@ -107,7 +131,7 @@ class TaskAllocationEnv(AECEnv):
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
-        self.successful_engagements = np.zeros(self.num_threats, dtype=bool)
+        self.eliminated_threats = np.zeros(self.num_threats, dtype=bool)
 
         # Random initialize threats
         self.threat_levels = np.zeros(self.num_threats)
@@ -151,7 +175,6 @@ class TaskAllocationEnv(AECEnv):
         if self._agent_selector.is_last():
             self._simulate_engagement()
             self.rewards = self._calculate_rewards()
-            self.truncations = {agent: True for agent in self.agents}
         else:
             self._clear_rewards()
 
@@ -209,11 +232,11 @@ class TaskAllocationEnv(AECEnv):
         self.drone_cost = np.zeros(self.num_threats, dtype=int)
         for agent, pos in self.allocation_map.items():
             if not (self.terminations[agent] or self.truncations[agent]):
-                if self.actual_threats[pos] and not self.successful_engagements[pos]:
+                if self.actual_threats[pos] and not self.eliminated_threats[pos]:
                     self.terminations[agent] = True
                     self.drone_cost[pos] += 1
                     if np.random.random() < self.attack_prob:
-                        self.successful_engagements[pos] = True
+                        self.eliminated_threats[pos] = True
 
     def _calculate_rewards(self):
         covered_threats = (self.current_allocation > 0)[self.actual_threats]
@@ -229,7 +252,7 @@ class TaskAllocationEnv(AECEnv):
         ) / np.sum(self.threat_levels)
 
         # success rate
-        threats_destroyed = np.sum(self.successful_engagements)
+        threats_destroyed = np.sum(self.eliminated_threats)
         drones_lost = sum(self.terminations.values())
         success_rate = (
             (threats_destroyed / self.num_actual_threat)
@@ -238,11 +261,11 @@ class TaskAllocationEnv(AECEnv):
         )
 
         # kill reward by threats
-        destroy_reward = np.sum(self.successful_engagements * self.threat_levels)
+        destroy_reward = np.sum(self.eliminated_threats * self.threat_levels)
 
         # remain penalty
         remaining_penalty = np.sum(
-            self.threat_levels[self.actual_threats & ~self.successful_engagements]
+            self.threat_levels[self.actual_threats & ~self.eliminated_threats]
         ) / (np.sum(self.threat_levels[self.actual_threats]) + 1e-8)
 
         # overall reward
@@ -265,13 +288,11 @@ class TaskAllocationEnv(AECEnv):
         return {agent: total_reward for agent in self.agents}
 
     def render(self):
-        if self.render_mode != "human":
-            return
-
         if self.screen is None:
-            self._init_pygame()
+            self._init_rendering()
 
-        self.screen.fill((240, 240, 240))  # Light gray background
+        self.screen.fill((240, 240, 240))
+        font = pygame.font.Font(None, 24)
 
         # Draw threat grid
         grid_width = self.screen_width - 300
@@ -279,41 +300,32 @@ class TaskAllocationEnv(AECEnv):
         cell_width = grid_width // self.num_threats
         cell_height = grid_height // 3
 
-        font = pygame.font.Font(None, 24)
-
         for i in range(self.num_threats):
             x = i * cell_width + 250
 
             # Threat level
-            color = (int(255 * self.threat_levels[i]), 100, 100)
+            color = get_threat_color(self.threat_levels[i])
             pygame.draw.rect(self.screen, color, (x, 50, cell_width, cell_height))
 
             # Write threat level in the cell
-            threat_text = font.render(f"{self.threat_levels[i]:.2f}", True, (0, 0, 0))
-            text_rect = threat_text.get_rect(
-                center=(x + cell_width // 2, 50 + cell_height // 2)
-            )
-            self.screen.blit(threat_text, text_rect)
+            if self.render_config.get("show_threat_level"):
+                threat_text = font.render(
+                    f"{self.threat_levels[i]:.2f}", True, (0, 0, 0)
+                )
+                text_rect = threat_text.get_rect(
+                    center=(x + cell_width // 2, 50 + cell_height // 2)
+                )
+                self.screen.blit(threat_text, text_rect)
 
             # Actual threat
             if self.actual_threats[i]:
                 threat_surface = pygame.Surface((cell_width, cell_height))
                 threat_surface.set_alpha(128)
-                threat_surface.fill((255, 165, 0))
+                threat_surface.fill((100, 200, 255))
                 self.screen.blit(threat_surface, (x, 50 + cell_height))
 
-            # Allocation
-            allocated = min(self.current_allocation[i], 10)
-            for j in range(allocated):
-                pygame.draw.circle(
-                    self.screen,
-                    (0, 100, 255),
-                    (x + cell_width // 2, 50 + cell_height * 2 + j * 20 + 10),
-                    5,
-                )
-
             # Success
-            if self.successful_engagements[i]:
+            if self.eliminated_threats[i]:
                 pygame.draw.line(
                     self.screen,
                     (255, 0, 0),
@@ -328,6 +340,23 @@ class TaskAllocationEnv(AECEnv):
                     (x + 5, 50 + cell_height * 2 - 5),
                     3,
                 )
+
+        # Allocation
+        counter = np.zeros(self.num_threats)
+        for agent, pos in self.allocation_map.items():
+            counter[pos] = min(counter[pos] + 1, 10)
+            x = pos * cell_width + 250
+            color = (0, 100, 255)  # Default blue for active drones
+            if self.terminations.get(agent, False):
+                color = (255, 0, 0)  # Red for destroyed drones
+            elif self.truncations.get(agent, False):
+                color = (255, 165, 0)  # Orange for damaged drones
+            pygame.draw.circle(
+                self.screen,
+                color,
+                (x + cell_width // 2, 50 + cell_height * 2 + counter[pos] * 20 + 10),
+                5,
+            )
 
         # Draw grid lines
         for i in range(self.num_threats + 1):
@@ -351,8 +380,8 @@ class TaskAllocationEnv(AECEnv):
             f"Actual Threats: {self.num_actual_threat}",
         ]
 
-        if all(self.truncations.values()):
-            info = next(iter(self.infos.values()))
+        info = next(iter(self.infos.values()))
+        if info:
             texts.extend(
                 [
                     f"Coverage: {info['coverage']:.2f}",
@@ -365,7 +394,7 @@ class TaskAllocationEnv(AECEnv):
             )
 
         # Create a semi-transparent surface for text background
-        text_surface = pygame.Surface((240, self.screen_height))
+        text_surface = pygame.Surface((210, self.screen_height))
         text_surface.set_alpha(200)
         text_surface.fill((220, 220, 220))
         self.screen.blit(text_surface, (0, 0))
@@ -376,47 +405,97 @@ class TaskAllocationEnv(AECEnv):
 
         # Draw legend
         legend_items = [
-            ("Threat Level", (255, 100, 100)),
-            ("Actual Threat", (255, 165, 0)),
-            ("Allocated Drone", (0, 100, 255)),
-            ("Successful Engagement", (255, 0, 0)),
+            ("Threat Level", get_threat_color(0.5)),
+            ("Actual Threat", (100, 200, 255)),
+            ("Active Drone", (0, 100, 255)),
+            ("Damaged Drone", (255, 165, 0)),
+            ("Destroyed Drone", (255, 0, 0)),
+            ("Eliminate", (255, 0, 0)),
         ]
 
+        legend_x = 10
+        legend_y = self.screen_height - 150
         for i, (text, color) in enumerate(legend_items):
-            if text == "Successful Engagement":
+            if text == "Threat Level":
+                # Draw a gradient for threat level
+                gradient_width = 40
+                for j in range(gradient_width):
+                    threat_level = j / (gradient_width - 1)
+                    gradient_color = get_threat_color(threat_level)
+                    pygame.draw.line(
+                        self.screen,
+                        gradient_color,
+                        (legend_x + 10 + j, legend_y + 10 + i * 20),
+                        (legend_x + 10 + j, legend_y + 25 + i * 20),
+                    )
+            elif text == "Eliminate":
                 pygame.draw.line(
                     self.screen,
                     color,
-                    (10, self.screen_height - 100 + i * 25),
-                    (30, self.screen_height - 80 + i * 25),
+                    (legend_x + 10, legend_y + 15 + i * 20),
+                    (legend_x + 30, legend_y + 25 + i * 20),
                     3,
                 )
                 pygame.draw.line(
                     self.screen,
                     color,
-                    (30, self.screen_height - 100 + i * 25),
-                    (10, self.screen_height - 80 + i * 25),
+                    (legend_x + 30, legend_y + 15 + i * 20),
+                    (legend_x + 10, legend_y + 25 + i * 20),
                     3,
                 )
             else:
-                pygame.draw.rect(
-                    self.screen, color, (10, self.screen_height - 100 + i * 25, 20, 20)
-                )
+                if text == "Actual Threat":
+                    # Draw a semi-transparent rectangle for actual threat
+                    threat_surface = pygame.Surface((15, 15))
+                    threat_surface.set_alpha(128)
+                    threat_surface.fill(color)
+                    self.screen.blit(
+                        threat_surface, (legend_x + 10, legend_y + 10 + i * 20)
+                    )
+                else:
+                    # Draw a circle for drones
+                    pygame.draw.circle(
+                        self.screen,
+                        color,
+                        (legend_x + 17, legend_y + 17 + i * 20),
+                        5,
+                    )
+
             legend_text = font.render(text, True, (0, 0, 0))
-            self.screen.blit(legend_text, (35, self.screen_height - 100 + i * 25))
+            self.screen.blit(legend_text, (legend_x + 55, legend_y + 10 + i * 20))
 
         pygame.display.flip()
-        for event in pygame.event.get():
-            if event == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+        if self._agent_selector.is_first() and self.render_config.get(
+            "pause_at_end", False
+        ):
+            self.screen.blit(
+                font.render("Press SPACE to continue", True, (0, 0, 0)),
+                (self.screen_width // 2 - 100, 10),
+            )
+            pygame.display.flip()
 
-    def _init_pygame(self):
+            while not handle_events():
+                pygame.time.wait(10)
+        else:
+            handle_events()
+
+        if self.render_config.get("save_screenshot"):
+            self._save_screenshot()
+
+    def _init_rendering(self):
         pygame.init()
-        self.screen_width = 1000
-        self.screen_height = 600
+        self.screen_width = self.render_config.get("width", 1000)
+        self.screen_height = self.render_config.get("height", 600)
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Drone Task Allocation")
+
+    def _save_screenshot(self):
+        folder = f"logs/{self.timestamps}_{self.episode_count}"
+        if not os.path.exists(folder):
+            os.makedirs(folder, exist_ok=True)
+
+        file_path = os.path.abspath(os.path.join(folder, f"{self.agent_selection}.png"))
+        pygame.image.save(self.screen, file_path)
 
 
 def raw_env(config: dict = None) -> TaskAllocationEnv:
@@ -435,9 +514,7 @@ def raw_env(config: dict = None) -> TaskAllocationEnv:
 
 
 if __name__ == "__main__":
-    import time
-
-    env = raw_env()
+    env = raw_env(dict(render_config={"pause_at_end": True, "save_screenshot": True}))
 
     for _ in range(20):
         env.reset()
@@ -449,8 +526,4 @@ if __name__ == "__main__":
                 action = np.random.choice(np.where(env.action_mask(agent))[0])
             env.step(action)
             env.render()
-            time.sleep(0.166)
-
-        s = input("Continue? Y/n ")
-        if s not in ["Y", "y"]:
-            break
+            pygame.time.wait(33)

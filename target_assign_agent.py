@@ -154,7 +154,7 @@ class RuleAgent:
         self.pre_allocation = None
         self.index = 0
 
-    def predict(self, state, action_mask):
+    def predict(self, state, action_mask=None):
         threat_levels, pre_allocation, current_allocation = state.reshape([3, -1])
         if not np.array_equal(self.pre_allocation, pre_allocation) or np.array_equal(
             self.current_allocation, pre_allocation
