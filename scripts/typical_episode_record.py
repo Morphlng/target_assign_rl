@@ -7,7 +7,7 @@ from gif_maker import PygameRecord
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 from target_assign_agent import RandomAgent, RuleAgent
-from target_assign_env import TaskAllocationEnv, raw_env
+from target_assign_aec import TaskAllocationEnv, raw_env
 
 
 def record_and_compare_scenario(
