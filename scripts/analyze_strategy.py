@@ -9,7 +9,7 @@ import seaborn as sns
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 from target_assign_agent import IQLAgent, RuleAgent
-from target_assign_env import TaskAllocationEnv, raw_env
+from target_assign_aec import TaskAllocationEnv, raw_env
 
 
 def inference_and_collect_data(
