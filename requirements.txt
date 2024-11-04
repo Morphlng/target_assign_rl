@@ -1,9 +1,0 @@
-gymnasium
-pettingzoo
-numpy<2.0
-torch
-torchaudio
-torchvision
-pandas
-matplotlib
-seaborn

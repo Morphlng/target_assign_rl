@@ -30,7 +30,7 @@ def handle_events():
     return False
 
 
-class TaskAllocationEnv(AECEnv):
+class TaskAllocationAEC(AECEnv):
     metadata = {"render_modes": ["human"], "name": "task_allocation_v0"}
 
     def __init__(self, config: dict = None):
@@ -501,7 +501,7 @@ class TaskAllocationEnv(AECEnv):
         pygame.image.save(self.screen, file_path)
 
 
-def raw_env(config: dict = None) -> TaskAllocationEnv:
+def raw_env(config: dict = None) -> TaskAllocationAEC:
     """Create an environment with the given configuration.
 
     Args:
@@ -510,7 +510,7 @@ def raw_env(config: dict = None) -> TaskAllocationEnv:
     Returns:
         TaskAllocationEnv: Wrapped environment.
     """
-    env = TaskAllocationEnv(config)
+    env = TaskAllocationAEC(config)
     env = wrappers.AssertOutOfBoundsWrapper(env)
     env = wrappers.OrderEnforcingWrapper(env)
     return env

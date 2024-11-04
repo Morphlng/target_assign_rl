@@ -1,13 +1,9 @@
-import os
-import sys
 from typing import Callable
 
 import numpy as np
 from gif_maker import PygameRecord
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
-from target_assign_agent import RandomAgent, RuleAgent
-from target_assign_aec import TaskAllocationEnv, raw_env
+from target_assign_rl import RandomAgent, RuleAgent, TaskAllocationAEC, raw_env
 
 
 def record_and_compare_scenario(
@@ -55,7 +51,7 @@ def record_and_compare_scenario(
 
             # Create a new environment with the same configuration for the rule agent
             num_drones = env.num_drones - drone_lost
-            env2 = TaskAllocationEnv(
+            env2 = TaskAllocationAEC(
                 dict(
                     min_drones=num_drones,
                     max_drones=num_drones,

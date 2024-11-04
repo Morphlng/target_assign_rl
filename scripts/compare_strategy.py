@@ -7,9 +7,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
-from target_assign_agent import IQLAgent, RandomAgent, RuleAgent
-from target_assign_aec import TaskAllocationEnv, raw_env
+from target_assign_rl import (
+    IQLAgent,
+    RandomAgent,
+    RuleAgent,
+    TaskAllocationAEC,
+    raw_env,
+)
 
 
 def simulate_drone_lost(
@@ -64,7 +68,7 @@ def simulate_drone_lost(
 
         # num_lost env
         num_drones = env.num_drones - drone_lost
-        env2 = TaskAllocationEnv(
+        env2 = TaskAllocationAEC(
             dict(
                 min_drones=num_drones,
                 max_drones=num_drones,

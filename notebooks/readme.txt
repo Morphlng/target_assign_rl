@@ -1,1 +1,0 @@
-You need to move the notebook to the same folder where `target_assign_env.py` and `target_assign_agent.py` exists.

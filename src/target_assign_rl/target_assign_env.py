@@ -1,14 +1,14 @@
 import gymnasium as gym
 
-from target_assign_aec import TaskAllocationEnv
+from target_assign_rl.target_assign_aec import TaskAllocationAEC
 
 
-class TaskAllocationGym(gym.Env):
-    """Wraps the TaskAllocationEnv to be compatible with OpenAI Gym."""
+class TaskAllocationEnv(gym.Env):
+    """Wraps the TaskAllocationAEC to be compatible with OpenAI Gym."""
 
     def __init__(self, config: dict = None):
         config = config or {}
-        self.aec_env = TaskAllocationEnv(config)
+        self.aec_env = TaskAllocationAEC(config)
 
         self.action_space = self.aec_env.action_space(self.aec_env.possible_agents[0])
         self.observation_space = gym.spaces.Dict(
@@ -40,7 +40,7 @@ class TaskAllocationGym(gym.Env):
 
 
 if __name__ == "__main__":
-    env = TaskAllocationGym(dict(render_config={"pause_at_end": True}))
+    env = TaskAllocationEnv(dict(render_config={"pause_at_end": True}))
 
     for _ in range(10):
         obs, info = env.reset()

@@ -38,12 +38,7 @@ class PygameRecord:
 
 
 if __name__ == "__main__":
-    import os
-    import sys
-
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
-    from target_assign_agent import RandomAgent, RuleAgent
-    from target_assign_aec import raw_env
+    from target_assign_rl import RuleAgent, raw_env
 
     env = raw_env(dict(render_config={"pause_at_end": False}))
     policy = RuleAgent(env.num_threats)

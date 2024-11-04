@@ -1,19 +1,16 @@
 import argparse
 import os
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
-from target_assign_agent import IQLAgent, RuleAgent
-from target_assign_aec import TaskAllocationEnv, raw_env
+from target_assign_rl import IQLAgent, RuleAgent, TaskAllocationAEC, raw_env
 
 
 def inference_and_collect_data(
-    env: TaskAllocationEnv, trained_agent: IQLAgent, num_episodes: int = 100
+    env: TaskAllocationAEC, trained_agent: IQLAgent, num_episodes: int = 100
 ):
     collected_data = []
 
@@ -64,8 +61,12 @@ def generate_threat_heatmap_data(collected_data):
         assignments_sum += episode_data["assignments"]
         eliminated_threats_cnt += episode_data["eliminated_threats"]
         actual_threats_sum += episode_data["actual_threats"]
-        drone_cost_success_sum += episode_data["drone_cost"] * episode_data["eliminated_threats"]
-        assignments_when_actual = (episode_data["assignments"] > 0) * episode_data["actual_threats"]
+        drone_cost_success_sum += (
+            episode_data["drone_cost"] * episode_data["eliminated_threats"]
+        )
+        assignments_when_actual = (episode_data["assignments"] > 0) * episode_data[
+            "actual_threats"
+        ]
         assignments_when_actual_cnt += assignments_when_actual
 
     # Calculate averages and rates
@@ -195,9 +196,7 @@ def analyze_multi_round_statistics(collected_data, show=False):
                 {
                     "threats": level_threats.sum(),
                     "covered": (level_threats & (row["assignments"] > 0)).sum(),
-                    "destroyed": (
-                        level_threats & (row["eliminated_threats"])
-                    ).sum(),
+                    "destroyed": (level_threats & (row["eliminated_threats"])).sum(),
                 }
             )
 
