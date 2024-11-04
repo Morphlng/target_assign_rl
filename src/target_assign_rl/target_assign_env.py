@@ -30,6 +30,11 @@ class TaskAllocationEnv(gym.Env):
         self.aec_env.step(action)
         obs, reward, te, tr, info = self.aec_env.last()
         action_mask = self.aec_env.action_mask(self.aec_env.agent_selection)
+
+        # Looped back to the first agent, episode is done
+        if self.aec_env._agent_selector.is_first():
+            tr = True
+
         return {"observations": obs, "action_mask": action_mask}, reward, te, tr, info
 
     def render(self):

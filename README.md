@@ -47,10 +47,17 @@ The environment includes a detailed visualization system using Pygame. It displa
 
 To use this environment:
 
-1. `pip install -r requirements.txt`
+1. `pip install -e .`
 2. Import the environment:
 
 ```python
-from task_allocation_env import raw_env
+from target_assign_rl import raw_env
 
-env = raw_env()
+env = raw_env() # AEC environment
+
+# or
+
+from target_assign_rl import TaskAllocationEnv
+
+env = TaskAllocationEnv() # Gym environment
+```
