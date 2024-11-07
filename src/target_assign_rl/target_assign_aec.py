@@ -63,6 +63,7 @@ class TaskAllocationAEC(AECEnv):
         self.dict_obs = self.config.get("dict_obs", False)
         self.possible_level = self.config.get("possible_level", [0, 0.2, 0.4, 0.6, 0.8])
         self.threat_dist = self.config.get("threat_dist", None)
+        self._limit = self.config.get("_limit", 3)
         if self.threat_dist is not None and (
             len(self.threat_dist) != len(self.possible_level)
         ):
@@ -201,7 +202,9 @@ class TaskAllocationAEC(AECEnv):
         return self.action_spaces[agent]
 
     def action_mask(self, agent):
-        return (self.threat_levels > 0).astype(np.int8)
+        threats = (self.threat_levels > 0).astype(np.bool_)
+        redundant = (self.current_allocation > self._limit).astype(np.bool_)
+        return (threats & ~redundant).astype(np.int8)
 
     def calculate_pre_allocation(self):
         pre_allocation = np.zeros(self.num_threats, dtype=int)
