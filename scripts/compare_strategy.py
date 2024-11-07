@@ -1,6 +1,5 @@
 import argparse
 import os
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +11,7 @@ from target_assign_rl import (
     RandomAgent,
     RuleAgent,
     TaskAllocationAEC,
+    TaskAllocationEnv,
     raw_env,
 )
 
@@ -25,6 +25,8 @@ def simulate_drone_lost(
 ):
     if env is None:
         env = raw_env(dict(min_drones=20))
+    elif isinstance(env, TaskAllocationEnv):
+        env = env.aec_env
 
     compare_agent = trained_agent if compare_agent is None else compare_agent
     baselines = []

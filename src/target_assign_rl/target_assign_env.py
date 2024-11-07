@@ -11,31 +11,41 @@ class TaskAllocationEnv(gym.Env):
         self.aec_env = TaskAllocationAEC(config)
 
         self.action_space = self.aec_env.action_space(self.aec_env.possible_agents[0])
-        self.observation_space = gym.spaces.Dict(
-            {
-                "observations": self.aec_env.observation_space(
-                    self.aec_env.possible_agents[0]
-                ),
-                "action_mask": gym.spaces.MultiBinary(self.action_space.n),
-            }
-        )
+
+        self.mask_obs = config.get("mask_obs", False)
+        obs_space = self.aec_env.observation_space(self.aec_env.possible_agents[0])
+        if self.mask_obs:
+            obs_dict = {"observations": obs_space}
+            obs_dict["action_mask"] = gym.spaces.MultiBinary(self.action_space.n)
+            self.observation_space = gym.spaces.Dict(obs_dict)
+        else:
+            self.observation_space = obs_space
 
     def reset(self, *, seed=None, options=None):
         self.aec_env.reset(seed, options)
-        obs, reward, te, tr, info = self.aec_env.last()
-        action_mask = self.aec_env.action_mask(self.aec_env.agent_selection)
-        return {"observations": obs, "action_mask": action_mask}, info
+        obs, _, _, _, info = self.aec_env.last()
+        if self.mask_obs:
+            obs = {"observations": obs}
+            obs["action_mask"] = self.aec_env.action_mask(self.aec_env.agent_selection)
+
+        return obs, info
 
     def step(self, action):
         self.aec_env.step(action)
         obs, reward, te, tr, info = self.aec_env.last()
-        action_mask = self.aec_env.action_mask(self.aec_env.agent_selection)
+        if self.mask_obs:
+            obs = {"observations": obs}
+            obs["action_mask"] = self.aec_env.action_mask(self.aec_env.agent_selection)
 
         # Looped back to the first agent, episode is done
         if self.aec_env._agent_selector.is_first():
             tr = True
 
-        return {"observations": obs, "action_mask": action_mask}, reward, te, tr, info
+        return obs, reward, te, tr, info
+
+    def action_masks(self):
+        """Stable-Baselines3 requires this method to be implemented."""
+        return list(map(bool, self.aec_env.action_mask(self.aec_env.agent_selection)))
 
     def render(self):
         self.aec_env.render()
