@@ -97,7 +97,7 @@ if __name__ == "__main__":
         log_path=f"{log_dir}/eval_results",
         eval_freq=1000,
         n_eval_episodes=5,
-        deterministic=True,
+        deterministic=False,
         render=False,
     )
 

@@ -7,6 +7,7 @@ import pandas as pd
 import seaborn as sns
 
 from target_assign_rl import (
+    Agent,
     IQLAgent,
     RandomAgent,
     RuleAgent,
@@ -17,8 +18,8 @@ from target_assign_rl import (
 
 
 def simulate_drone_lost(
-    trained_agent: IQLAgent,
-    compare_agent: RuleAgent = None,
+    trained_agent: Agent,
+    compare_agent: Agent = None,
     num_episodes=100,
     max_drone_lost=4,
     env=None,
@@ -32,7 +33,7 @@ def simulate_drone_lost(
     baselines = []
     comparison = []
 
-    for episode in range(num_episodes):
+    for _ in range(num_episodes):
         env.reset()
         drone_lost = np.random.randint(0, max_drone_lost + 1)
 

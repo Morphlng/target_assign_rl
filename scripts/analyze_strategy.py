@@ -6,15 +6,15 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from target_assign_rl import IQLAgent, RuleAgent, TaskAllocationAEC, raw_env
+from target_assign_rl import Agent, IQLAgent, RuleAgent, TaskAllocationAEC, raw_env
 
 
 def inference_and_collect_data(
-    env: TaskAllocationAEC, trained_agent: IQLAgent, num_episodes: int = 100
+    env: TaskAllocationAEC, trained_agent: Agent, num_episodes: int = 100
 ):
     collected_data = []
 
-    for episode in range(num_episodes):
+    for _ in range(num_episodes):
         env.reset()
         episode_data = {
             "possible_level": env.possible_level.copy(),

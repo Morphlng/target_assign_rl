@@ -3,12 +3,12 @@ from typing import Callable
 import numpy as np
 from gif_maker import PygameRecord
 
-from target_assign_rl import RandomAgent, RuleAgent, TaskAllocationAEC, raw_env
+from target_assign_rl import Agent, RandomAgent, RuleAgent, TaskAllocationAEC, raw_env
 
 
 def record_and_compare_scenario(
-    baseline_agent: RuleAgent,
-    compare_agent: RuleAgent,
+    baseline_agent: Agent,
+    compare_agent: Agent,
     scenario_name: str,
     condition: Callable[[np.ndarray], bool],
     max_attempts: int = 1000,
