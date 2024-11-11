@@ -40,6 +40,7 @@ class CustomCallbacks(DefaultCallbacks):
 
 if __name__ == "__main__":
     import argparse
+    import json
     import os
 
     parser = argparse.ArgumentParser()
@@ -47,12 +48,15 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--num_gpus", type=int, default=0)
     parser.add_argument("--action_mask", action="store_true")
+    parser.add_argument("--env_config", type=str, default="{}")
+    parser.add_argument("--train_steps", type=int, default=int(1e6))
     args = parser.parse_args()
 
     algo: Algorithm = get_trainable_cls(args.algo)
     config: AlgorithmConfig = algo.get_default_config()
     if args.action_mask:
         custom_model = TorchActionMaskModel
+        config.env_config.update({"mask_obs": True})
         if args.algo == "DQN":
             config.dueling = False
             config.hiddens = []
@@ -63,7 +67,7 @@ if __name__ == "__main__":
 
     config = (
         config.framework("torch")
-        .environment(TaskAllocationEnv)
+        .environment(TaskAllocationEnv, env_config=json.loads(args.env_config))
         .training(
             lr=1e-4,
             gamma=0.99,
@@ -104,7 +108,7 @@ if __name__ == "__main__":
                 checkpoint_score_attribute="episode_reward_mean",
                 checkpoint_score_order="max",
             ),
-            stop={"timesteps_total": 1e6, "episode_reward_mean": 6},
+            stop={"timesteps_total": args.train_steps, "episode_reward_mean": 6},
         ),
     )
 
