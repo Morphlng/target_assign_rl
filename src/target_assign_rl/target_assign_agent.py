@@ -51,7 +51,7 @@ class RandomAgent(Agent):
 
 
 class RllibAgent(Agent):
-    def __init__(self, ckpt_path: str, explore: bool = True):
+    def __init__(self, ckpt_path: str, explore: bool = False):
         from ray.rllib.policy import Policy
 
         policies = Policy.from_checkpoint(ckpt_path)
@@ -60,16 +60,65 @@ class RllibAgent(Agent):
         else:
             self.policy = policies
 
-        self._state = self.policy.get_initial_state()
+        self.state = self.policy.get_initial_state()
         self.explore = explore
+        self.mask_obs = self.policy.config.get("env_config", {}).get("mask_obs", False)
 
     def reset(self):
-        self._state = self.policy.get_initial_state()
+        self.state = self.policy.get_initial_state()
 
     def predict(self, obs, action_mask=None):
-        action, self._state, _ = self.policy.compute_single_action(
-            obs, self._state, explore=self.explore
+        if self.mask_obs and (not isinstance(obs, dict) or "action_mask" not in obs):
+            obs = {
+                "observations": obs,
+                "action_mask": action_mask,
+            }
+
+        action, self.state, _ = self.policy.compute_single_action(
+            obs, self.state, explore=self.explore
         )
+        return action
+
+
+class Sb3Agent(Agent):
+    def __init__(self, algorithm: str, ckpt: str, deterministic: bool = False):
+        import sb3_contrib
+        import stable_baselines3 as sb3
+        from stable_baselines3.common.base_class import BaseAlgorithm
+
+        algo_cls: BaseAlgorithm
+
+        if hasattr(sb3, algorithm):
+            algo_cls = getattr(sb3, algorithm)
+        elif hasattr(sb3_contrib, algorithm):
+            algo_cls = getattr(sb3_contrib, algorithm)
+        else:
+            raise ValueError(
+                f"Algorithm {algorithm} not found in stable_baselines3 or sb3_contrib"
+            )
+
+        self.model = algo_cls.load(ckpt)
+        self.state = None
+        self.deterministic = deterministic
+
+    def reset(self):
+        self.state = None
+
+    def predict(self, obs, action_mask=None):
+        if action_mask is not None:
+            action, self.state = self.model.predict(
+                obs,
+                self.state,
+                deterministic=self.deterministic,
+            )
+        else:
+            action, self.state = self.model.predict(
+                obs,
+                self.state,
+                deterministic=self.deterministic,
+                action_masks=action_mask,
+            )
+
         return action
 
 

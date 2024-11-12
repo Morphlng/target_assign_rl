@@ -36,6 +36,8 @@ setup(
     extras_require={
         "test": ["pytest", "pytest-cov"],
         "torch": ["torch", "torchvision", "torchaudio"],
+        "ray": ["ray[rllib]==2.8.1"],
+        "sb3": ["stable-baselines3", "sb3-contrib"],
     },
     keywords="gym, reinforcement learning, multi-agent, target assignment",
     project_urls={

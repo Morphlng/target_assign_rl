@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 from typing import Any, Dict, Tuple
 
 import ray
 from ray import train, tune
 from ray.rllib.algorithms.algorithm import Algorithm, AlgorithmConfig
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.rllib.env.base_env import BaseEnv
 from ray.rllib.evaluation import RolloutWorker
 from ray.rllib.evaluation.episode import Episode
+from ray.rllib.evaluation.episode_v2 import EpisodeV2
 from ray.rllib.examples.models.action_mask_model import TorchActionMaskModel
 from ray.rllib.policy import Policy
 from ray.rllib.policy.sample_batch import SampleBatch
@@ -21,6 +25,25 @@ class CustomCallbacks(DefaultCallbacks):
             result["checkpoint_dir_name"] = algorithm._storage.checkpoint_dir_name
             algorithm._storage.current_checkpoint_index -= 1
 
+    def on_episode_end(
+        self,
+        *,
+        worker: RolloutWorker,
+        base_env: BaseEnv,
+        policies: Dict[str, Policy],
+        episode: Episode | EpisodeV2 | Exception,
+        env_index: int | None = None,
+        **kwargs,
+    ) -> None:
+        if worker.config.batch_mode == "truncate_episodes":
+            raise RuntimeError("You should not use truncate_episodes with this env")
+
+        info = episode.last_info_for()
+        episode.custom_metrics["coverage"] = info["coverage"]
+        episode.custom_metrics["success_rate"] = info["success_rate"]
+        episode.custom_metrics["kd_ratio"] = info["kd_ratio"]
+        episode.custom_metrics["num_remaining_threat"] = info["num_remaining_threat"]
+
     def on_postprocess_trajectory(
         self,
         *,
@@ -31,10 +54,17 @@ class CustomCallbacks(DefaultCallbacks):
         policies: Dict[str, Policy],
         postprocessed_batch: SampleBatch,
         original_batches: Dict[Any, Tuple[Policy, SampleBatch]],
-        **kwargs
+        **kwargs,
     ) -> None:
+        # Do a manual TD-decay
         rewards = postprocessed_batch[SampleBatch.REWARDS]
-        rewards.fill(rewards[-1])
+        last_r = rewards[-1]
+        gamma = policies[policy_id].config["gamma"]
+
+        for i in range(len(rewards) - 2, -1, -1):
+            rewards[i] += gamma * last_r
+            last_r = rewards[i]
+
         postprocessed_batch[SampleBatch.REWARDS] = rewards
 
 
