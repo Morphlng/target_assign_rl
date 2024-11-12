@@ -63,7 +63,7 @@ class TaskAllocationAEC(AECEnv):
         self.dict_obs = self.config.get("dict_obs", False)
         self.possible_level = self.config.get("possible_level", [0, 0.2, 0.4, 0.6, 0.8])
         self.threat_dist = self.config.get("threat_dist", None)
-        self._limit = self.config.get("_limit", 3)
+        self._limit = self.config.get("_limit", self.max_drones)
         if self.threat_dist is not None and (
             len(self.threat_dist) != len(self.possible_level)
         ):
