@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pygame
 from PIL import Image
@@ -8,6 +10,9 @@ class PygameRecord:
         self.fps = fps
         self.filename = filename
         self.frames = []
+
+        dirname = os.path.dirname(filename)
+        os.makedirs(dirname, exist_ok=True)
 
     def add_frame(self):
         curr_surface = pygame.display.get_surface()

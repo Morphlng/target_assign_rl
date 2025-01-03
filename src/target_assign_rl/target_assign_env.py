@@ -55,7 +55,9 @@ class TaskAllocationEnv(gym.Env):
 
 
 if __name__ == "__main__":
-    env = TaskAllocationEnv(dict(render_config={"pause_at_end": True}))
+    env = TaskAllocationEnv(
+        dict(render_mode="human", render_config={"pause_at_end": True})
+    )
 
     for _ in range(10):
         obs, info = env.reset()

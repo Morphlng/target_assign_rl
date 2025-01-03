@@ -1,7 +1,7 @@
 from typing import Callable
 
 import numpy as np
-from gif_maker import PygameRecord
+from target_assign_rl.examples.gif_maker import PygameRecord
 
 from target_assign_rl import Agent, RandomAgent, RuleAgent, TaskAllocationAEC, raw_env
 
