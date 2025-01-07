@@ -1,44 +1,75 @@
+import os
+import time
+
 import numpy as np
 import pygame
+from scipy.optimize import linprog
 
-from target_assign_rl import Agent, RandomAgent, raw_env
+from target_assign_rl import Agent, RuleAgent, raw_env
+from target_assign_rl.examples.gif_maker import PygameRecord
 from target_assign_rl.viz import get_threat_color, handle_events
 
 
 class ReallocationDemo:
-    def __init__(self, env_config: dict = None):
-        env_config = env_config or {}
-
+    def __init__(
+        self,
+        env_config: dict = None,
+        width: int = 1200,
+        height: int = 800,
+        grid_size: int = 40,
+        cols: int = 25,
+        rows: int = 20,
+        recording: bool = False,
+        record_dir: str = "gifs",
+        fps: int = 30,
+    ):
         # Display settings
-        self.WINDOW_WIDTH = 1200
-        self.WINDOW_HEIGHT = 800
-        self.GRID_SIZE = 40
-        self.COLS = 25
-        self.ROWS = 20
-        self.BUILDING_START = self.COLS - 5
+        self.width = width
+        self.height = height
+        self.grid_size = grid_size
+        self.cols = cols
+        self.rows = rows
+        self.building_col = self.cols - 5
+
+        # Recording settings
+        self.recording = recording
+        self.record_dir = record_dir
+        self.fps = fps
+        if self.recording:
+            os.makedirs(self.record_dir, exist_ok=True)
 
         # Movement settings
         self.MOVE_SPEED = 2  # pixels per frame
         self.REALLOCATION_INTERVAL = 100  # frames
-        self.ATTACK_RANGE = 1 * self.GRID_SIZE
+        self.ATTACK_RANGE = 1 * self.grid_size
 
         pygame.init()
-        self.screen = pygame.display.set_mode((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
+        self.screen = pygame.display.set_mode((self.width, self.height))
         pygame.display.set_caption("UAV Strike Process")
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(None, 24)
+        self.font = pygame.font.SysFont("SimHei", 24)
 
         self.env = raw_env(env_config)
+        self.threat_hist = []
         self.reset_simulation()
+
+    @property
+    def attack_x(self):
+        return int(self.building_col * self.grid_size - self.ATTACK_RANGE)
+
+    @property
+    def building_start(self):
+        return int(self.building_col * self.grid_size)
 
     def reset_simulation(self):
         """Initialize a new strike mission"""
         self.env.reset()
         self.frame_count = 0
+        self.threat_hist = [self.env.threat_levels.copy()]
 
         # Initialize UAVs at left side
         self.uavs = []
-        spacing = self.WINDOW_HEIGHT / self.env.num_drones
+        spacing = self.height / self.env.num_drones
         for i in range(self.env.num_drones):
             self.uavs.append(
                 {
@@ -49,11 +80,12 @@ class ReallocationDemo:
                     "current_row": None,
                     "target_row": None,
                     "in_transition": False,
+                    "entered": False,
                 }
             )
 
         # Initialize threat state
-        self.window_mapping = np.random.permutation(self.ROWS)
+        self.window_mapping = np.random.permutation(self.rows)
         self.window_threats = self.env.threat_levels[self.window_mapping]
         self.enemies = [
             {
@@ -64,16 +96,30 @@ class ReallocationDemo:
                     else "none"
                 ),
             }
-            for row in range(self.ROWS)
+            for row in range(self.rows)
         ]
 
         self.perform_allocation()
 
+        # Make the initial position of UAVs the same as their target position
+        for uav in self.uavs:
+            row_assign = self.row_assignments[uav["target_row"]]
+            row_num = len(row_assign)
+
+            r_index = row_assign.index(uav)
+            uav["pos"] = uav["target_pos"] + np.array(
+                [(row_num - r_index - 1) * self.grid_size, 0]
+            )
+            uav["current_row"] = uav["target_row"]
+            uav["in_transition"] = False
+
     def perform_allocation(self, agent: Agent = None):
         """Allocate UAVs to targets based on current threat levels"""
         if agent is None:
-            agent = RandomAgent(self.ROWS)
+            agent = RuleAgent(self.rows)
 
+        # Step 1: Determine the number of UAVs required per target window
+        target_assignments = [0] * self.rows
         for uav in self.uavs:
             if uav["status"] != "active":
                 continue
@@ -83,33 +129,104 @@ class ReallocationDemo:
             action = agent.predict(obs, action_mask)
             self.env.step(action)
             target_row = np.where(self.window_mapping == action)[0][0]
+            target_assignments[target_row] += 1
 
-            if target_row != uav["target_row"]:
-                uav["target_row"] = target_row
-                uav["in_transition"] = True
-                uav["target_pos"] = np.array(
-                    [
-                        uav["pos"][0],  # Keep current x position
-                        target_row * self.GRID_SIZE
-                        + self.GRID_SIZE / 2,  # Center of target row
-                    ]
+        # Step 2: Define the linear programming problem
+        num_uavs = len(self.uavs)
+        num_rows = self.rows
+
+        # Create the cost matrix: cost[i, j] is the distance of UAV `i` to target row `j`
+        cost_matrix = np.zeros((num_uavs, num_rows))
+        for i, uav in enumerate(self.uavs):
+            if uav["status"] != "active":
+                cost_matrix[i, :] = np.inf
+                continue
+
+            for j in range(num_rows):
+                target_y = j * self.grid_size + self.grid_size / 2
+                cost_matrix[i, j] = np.linalg.norm(
+                    uav["pos"]
+                    - np.array([self.building_col * self.grid_size, target_y]),
                 )
+
+        # Flatten the cost matrix to create the objective function for linprog
+        c = cost_matrix.flatten()
+
+        # Create the constraints
+        # Constraint 1: Each UAV can only be assigned to one target row (row sum = 1)
+        A_eq_uav = np.zeros((num_uavs, num_uavs * num_rows))
+        for i in range(num_uavs):
+            A_eq_uav[i, i * num_rows : (i + 1) * num_rows] = 1
+
+        b_eq_uav = np.ones(num_uavs)  # Each UAV is assigned to exactly one target
+
+        # Constraint 2: Each target row must receive the required number of UAVs
+        A_eq_row = np.zeros((num_rows, num_uavs * num_rows))
+        for j in range(num_rows):
+            for i in range(num_uavs):
+                A_eq_row[j, i * num_rows + j] = 1
+
+        b_eq_row = target_assignments  # Each target row must receive the required number of UAVs
+
+        # Combine the equality constraints
+        A_eq = np.vstack([A_eq_uav, A_eq_row])
+        b_eq = np.hstack([b_eq_uav, b_eq_row])
+
+        # Bounds: Each variable (UAV-to-row assignment) must be binary (0 or 1)
+        # Note: linprog only supports continuous variables, so we relax this to [0, 1]
+        bounds = [(0, 1) for _ in range(num_uavs * num_rows)]
+
+        # Step 3: Solve the linear programming problem
+        result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs")
+
+        if not result.success:
+            raise ValueError("Linear programming failed to find a solution.")
+
+        # Step 4: Extract the assignment from the result
+        assignment = result.x.reshape((num_uavs, num_rows))
+
+        # Assign UAVs to their respective target rows
+        for i, uav in enumerate(self.uavs):
+            if uav["status"] != "active":
+                continue
+
+            target_row = np.argmax(assignment[i])
+            if assignment[i, target_row] > 0:
+                if uav["target_row"] != target_row:
+                    uav["target_row"] = target_row
+                    uav["in_transition"] = True
+                    target_x = min(
+                        uav["pos"][0]
+                        + abs((uav["current_row"] or target_row) - target_row)
+                        * self.grid_size,
+                        self.attack_x,
+                    )
+                    target_y = target_row * self.grid_size + self.grid_size / 2
+                    uav["target_pos"] = np.array(
+                        [
+                            target_x,  # Move forward
+                            target_y,  # Center of target row
+                        ]
+                    )
+
+        # Create a dictionary to track UAVs assigned to each row
+        self.row_assignments: "dict[int, list]" = {}
+        for uav in self.uavs:
+            if uav["target_row"] is not None:
+                if uav["target_row"] not in self.row_assignments:
+                    self.row_assignments[uav["target_row"]] = []
+                self.row_assignments[uav["target_row"]].append(uav)
+
+        # Sort UAVs in each row by x-position (rightmost first)
+        for row in self.row_assignments:
+            self.row_assignments[row].sort(key=lambda u: (-u["pos"][0], u["id"]))
 
     def update_positions(self):
         """Update UAV positions"""
-        all_reached = True
 
-        # Create a dictionary to track UAVs assigned to each row
-        row_assignments: "dict[int, list]" = {}
-        for uav in self.uavs:
-            if uav["target_row"] is not None:
-                if uav["target_row"] not in row_assignments:
-                    row_assignments[uav["target_row"]] = []
-                row_assignments[uav["target_row"]].append(uav)
-
-        # Sort UAVs in each row by x-position (rightmost first)
-        for row in row_assignments:
-            row_assignments[row].sort(key=lambda u: (-u["pos"][0], u["id"]))
+        # Update row assignments
+        for row in self.row_assignments:
+            self.row_assignments[row].sort(key=lambda u: (-u["pos"][0], u["id"]))
 
         for uav in self.uavs:
             if uav["status"] != "active":
@@ -120,83 +237,77 @@ class ReallocationDemo:
             distance = np.linalg.norm(direction)
 
             # Check if we need to queue this UAV
-            if uav["target_row"] is not None:
-                row_uavs = row_assignments[uav["target_row"]]
-                uav_index = row_uavs.index(uav)
+            row_uavs = self.row_assignments[uav["target_row"]]
+            uav_index = row_uavs.index(uav)
 
-                # Calculate desired x-position based on queue position
-                attack_x = int(self.BUILDING_START * self.GRID_SIZE - self.ATTACK_RANGE)
-
-                # If this UAV is not the first in queue, adjust target position
-                if uav_index > 0:
-                    # Each subsequent UAV should stay one grid size behind the previous
-                    desired_x = int(attack_x - (uav_index * self.GRID_SIZE))
-
-                    # Update target position if needed
-                    if uav["target_pos"][0] > desired_x:
-                        uav["target_pos"][0] = desired_x
-
-                    # If leading UAV is in attack range, force queuing
-                    leading_uav = row_uavs[0]
-                    if leading_uav["pos"][0] >= attack_x:
-                        uav["target_pos"][0] = desired_x
-
-            if distance > self.MOVE_SPEED:  # If not at target
-                all_reached = False
+            if distance >= self.MOVE_SPEED:
                 # Normalize direction and apply speed
-                direction = direction / distance * self.MOVE_SPEED * 2
-                uav["pos"] += direction
+                movement = direction / distance * self.MOVE_SPEED
+                uav["pos"] += movement
 
                 # Update current row based on position
-                uav["current_row"] = int(uav["pos"][1] / self.GRID_SIZE)
+                uav["current_row"] = int(uav["pos"][1] / self.grid_size)
             else:
                 uav["in_transition"] = False
 
             # Move forward if not in transition and not queued
             if not uav["in_transition"]:
-                # Check if we're in a queue and at our desired position
-                should_move_forward = True
-                if uav["target_row"] is not None:
-                    row_uavs = row_assignments[uav["target_row"]]
-                    uav_index = row_uavs.index(uav)
-                    if uav_index > 0:  # If not the lead UAV
-                        leading_uav = row_uavs[0]
-                        if leading_uav["pos"][0] >= (
-                            self.BUILDING_START * self.GRID_SIZE - self.ATTACK_RANGE
-                        ):
-                            should_move_forward = False
-                    else:
-                        # If we're the lead UAV, check if we're at the target position
-                        if uav["pos"][0] >= attack_x:
-                            should_move_forward = False
+                # If this UAV is not the first in queue, adjust target position
+                if all(uav["status"] == "alive" for uav in row_uavs[:uav_index]):
+                    # Each subsequent UAV should stay one grid size behind the previous
+                    desired_x = int(self.attack_x - (uav_index * self.grid_size))
 
-                if should_move_forward:
+                    # Update target position if needed
+                    if uav["target_pos"][0] > desired_x:
+                        uav["target_pos"][0] = desired_x
+
+                # If all UAVs are in position, let them enter building one by one
+                if all(self._is_approached(u) for u in row_uavs):
+                    target_idx = self.window_mapping[uav["target_row"]]
+                    drone_cost = self.env.drone_cost[target_idx]
+                    if uav_index < drone_cost:
+                        uav["target_pos"][0] = int(
+                            self.building_start
+                            + (drone_cost - uav_index) * self.grid_size / 2
+                        )
+                        uav["in_transition"] = True
+                else:
+                    # Normal forward movement until reaching queue position
                     uav["pos"][0] += self.MOVE_SPEED
                     uav["target_pos"][0] = uav["pos"][0]
 
+            if uav["pos"][0] >= self.building_start:
+                uav["entered"] = True
+
             # Check for engagement range
             if (
-                self.BUILDING_START * self.GRID_SIZE - uav["pos"][0]
-            ) <= self.ATTACK_RANGE:
+                uav["entered"]
+                and self._is_reached(uav)
+                and all(uav["status"] != "active" for uav in row_uavs[:uav_index])
+                and (self.building_start - uav["pos"][0])
+                <= self.ATTACK_RANGE * (uav_index + 1)
+            ):
                 self.handle_engagement(uav)
-
-        return all_reached
 
     def handle_engagement(self, uav):
         """Handle UAV-threat engagement"""
         # Check for env's simulation result
         agent_id = uav["id"]
-        if self.env.terminations[agent_id]:
+        row = uav["current_row"]
+        index = self.window_mapping[row]
+        r_index = self.row_assignments[row].index(uav)
+
+        if r_index < self.env.drone_cost[index]:
             uav["status"] = "destroyed"
         elif self.env.truncations[agent_id]:
             uav["status"] = "damaged"
 
         # Whether successfully destroyed the threat
-        row = uav["current_row"]
-        index = self.window_mapping[row]
         destroyed = self.env.eliminated_threats[index]
         if destroyed:
             self.enemies[row]["status"] = "destroyed"
+
+        uav["pos"][0] = uav["target_pos"][0]
 
     def update_threats(self, agent: Agent):
         """Update threat distribution periodically"""
@@ -207,7 +318,8 @@ class ReallocationDemo:
         ):
             # Generate new threat distribution
             self.env.reset()
-            self.window_mapping = np.random.permutation(self.ROWS)
+            self.threat_hist.append(self.env.threat_levels.copy())
+            self.window_mapping = np.random.permutation(self.rows)
             self.window_threats = self.env.threat_levels[self.window_mapping]
             self.enemies = [
                 {
@@ -218,7 +330,7 @@ class ReallocationDemo:
                         else "none"
                     ),
                 }
-                for row in range(self.ROWS)
+                for row in range(self.rows)
             ]
             # Trigger reallocation
             self.perform_allocation(agent)
@@ -228,15 +340,15 @@ class ReallocationDemo:
         self.screen.fill((200, 200, 200))
 
         # Draw grid and building
-        for row in range(self.ROWS):
-            for col in range(self.COLS):
+        for row in range(self.rows):
+            for col in range(self.cols):
                 rect = pygame.Rect(
-                    col * self.GRID_SIZE,
-                    row * self.GRID_SIZE,
-                    self.GRID_SIZE,
-                    self.GRID_SIZE,
+                    col * self.grid_size,
+                    row * self.grid_size,
+                    self.grid_size,
+                    self.grid_size,
                 )
-                if col >= self.BUILDING_START:
+                if col >= self.building_col:
                     color = get_threat_color(self.window_threats[row])
                     pygame.draw.rect(self.screen, color, rect)
                 else:
@@ -247,65 +359,164 @@ class ReallocationDemo:
             for enemy in self.enemies:
                 if enemy["status"] != "none":
                     rect = pygame.Rect(
-                        (self.BUILDING_START + 2) * self.GRID_SIZE,
-                        enemy["row"] * self.GRID_SIZE,
-                        self.GRID_SIZE,
-                        self.GRID_SIZE,
+                        (self.building_col + 2) * self.grid_size,
+                        enemy["row"] * self.grid_size,
+                        self.grid_size,
+                        self.grid_size,
                     )
-                    color = (0, 0, 0) if enemy["status"] == "active" else (0, 255, 0)
-                    pygame.draw.circle(
-                        self.screen, color, rect.center, self.GRID_SIZE // 3
+                    color = (
+                        (0, 0, 255) if enemy["status"] == "active" else (128, 128, 128)
+                    )
+                    pygame.draw.rect(
+                        self.screen,
+                        color,
+                        pygame.Rect(
+                            rect.centerx - self.grid_size // 3,
+                            rect.centery - self.grid_size // 3,
+                            self.grid_size * 2 // 3,
+                            self.grid_size * 2 // 3,
+                        ),
                     )
 
         # Draw UAVs
         for uav in self.uavs:
-            color = (50, 50, 255) if uav["status"] == "active" else (255, 0, 0)
-            pygame.draw.circle(
-                self.screen, color, uav["pos"].astype(int), self.GRID_SIZE // 3
-            )
+            radius = self.grid_size // 3
+            pos = uav["pos"].astype(int)
+            # black outline
+            pygame.draw.circle(self.screen, (0, 0, 0), pos, radius + 2)
+            # UAV circle
+            color = (255, 0, 0) if uav["status"] == "active" else (128, 128, 128)
+            pygame.draw.circle(self.screen, color, pos, radius)
 
         self._draw_statistics()
+        self._draw_legend()
         pygame.display.flip()
 
-    def _is_approached(self):
-        return any(
-            uav["pos"][0] >= self.BUILDING_START * self.GRID_SIZE - self.ATTACK_RANGE
-            for uav in self.uavs
-        )
+    def _is_approached(self, uav=None):
+        if uav is None:
+            # Check if any UAV is within attack range
+            return any(uav["pos"][0] >= self.attack_x for uav in self.uavs)
+        else:
+            r_index = self.row_assignments[uav["target_row"]].index(uav)
+            return uav["pos"][0] >= self.attack_x - r_index * self.grid_size
+
+    def _is_reached(self, uav):
+        return np.linalg.norm(uav["pos"] - uav["target_pos"]) < self.MOVE_SPEED
 
     def _draw_statistics(self):
         """Draw episode statistics at the top-right corner."""
         stats = [
-            f"Drones: {self.env.num_drones}",
-            f"Threats: {self.env.num_threats}",
-            f"Actual Threats: {self.env.num_actual_threat}",
+            f"无人机: {self.env.num_drones}",
+            f"威胁阵位: {self.env.num_threats}",
+            f"敌方单位: {self.env.num_actual_threat}",
         ]
 
         info = next(iter(self.env.infos.values()))
         if info:
             stats.extend(
                 [
-                    f"Coverage: {info['coverage']:.2f}",
-                    f"Success Rate: {info['success_rate']:.2f}",
-                    f"Threats Destroyed: {info['threat_destroyed']}",
-                    f"Drones Lost: {info['drone_lost']}",
-                    f"K/D Ratio: {info['kd_ratio']:.2f}",
-                    f"Remaining Threats: {info['num_remaining_threat']}",
+                    f"覆盖率: {info['coverage']:.2f}",
+                    f"打击成功率: {info['success_rate']:.2f}",
+                    f"击毁敌方数: {info['threat_destroyed']}",
+                    f"我方损失数: {info['drone_lost']}",
+                    f"战损比: {info['kd_ratio']:.2f}",
+                    f"剩余敌方数: {info['num_remaining_threat']}",
                 ]
             )
 
         # Create a semi-transparent background for statistics
-        text_background = pygame.Surface((200, 300))
+        text_background = pygame.Surface((200, 400))
         text_background.set_alpha(200)
         text_background.fill((220, 220, 220))
-        self.screen.blit(text_background, (self.WINDOW_WIDTH - 200, 50))
+        self.screen.blit(text_background, (self.width - 200, 50))
 
         # Draw each statistic entry
         for i, text in enumerate(stats):
             stat_text = self.font.render(text, True, (0, 0, 0))
-            self.screen.blit(stat_text, (self.WINDOW_WIDTH - 190, 60 + i * 20))
+            self.screen.blit(stat_text, (self.width - 195, 60 + i * 40))
+
+    def _draw_legend(self):
+        """Draw legend in bottom right corner"""
+        box_size = 20
+        spacing = 30
+        text_offset = 30
+        legend_width = 190
+        legend_height = 200
+
+        # Calculate position from right side
+        legend_x = self.screen.get_width() - legend_width
+        legend_y = self.screen.get_height() - 250
+
+        # Background for legend
+        legend_background = pygame.Rect(
+            legend_x - 5, legend_y - 5, legend_width, legend_height
+        )
+        pygame.draw.rect(self.screen, (240, 240, 240), legend_background)
+        pygame.draw.rect(self.screen, (100, 100, 100), legend_background, 1)
+
+        # UAV (Red circle)
+        pygame.draw.circle(
+            self.screen,
+            (255, 0, 0),
+            (legend_x + box_size // 2, legend_y + box_size // 2),
+            box_size // 2,
+        )
+        text = self.font.render("无人机-存活", True, (0, 0, 0))
+        self.screen.blit(text, (legend_x + text_offset, legend_y))
+
+        # Enemy (Blue square)
+        pygame.draw.rect(
+            self.screen,
+            (0, 0, 255),
+            pygame.Rect(legend_x, legend_y + spacing, box_size, box_size),
+        )
+        text = self.font.render("敌人-存活", True, (0, 0, 0))
+        self.screen.blit(text, (legend_x + text_offset, legend_y + spacing))
+
+        # Destroyed units (Gray)
+        pygame.draw.circle(
+            self.screen,
+            (128, 128, 128),
+            (legend_x + box_size // 2, legend_y + spacing * 2 + box_size // 2),
+            box_size // 2,
+        )
+        pygame.draw.rect(
+            self.screen,
+            (128, 128, 128),
+            pygame.Rect(
+                legend_x + box_size + 5, legend_y + spacing * 2, box_size, box_size
+            ),
+        )
+        text = self.font.render("损毁单位", True, (0, 0, 0))
+        self.screen.blit(
+            text, (legend_x + text_offset + box_size + 5, legend_y + spacing * 2)
+        )
+
+        # Threat level colors
+        threat_colors = [
+            (get_threat_color(0.1), "低威胁阵位"),
+            (get_threat_color(0.4), "中威胁阵位"),
+            (get_threat_color(0.8), "高威胁阵位"),
+        ]
+
+        for i, (color, label) in enumerate(threat_colors):
+            y_pos = legend_y + spacing * 3 + (i * spacing)
+            pygame.draw.rect(
+                self.screen, color, pygame.Rect(legend_x, y_pos, box_size, box_size)
+            )
+            text = self.font.render(label, True, (0, 0, 0))
+            self.screen.blit(text, (legend_x + text_offset, y_pos))
 
     def run(self, agent: Agent):
+        if self.recording:
+            recorder = PygameRecord(
+                os.path.join(
+                    self.record_dir,
+                    f"recording_{time.strftime('%Y%m%d-%H%M%S')}.gif",
+                ),
+                self.fps,
+            )
+
         self.reset_simulation()
         running = True
         while running:
@@ -315,18 +526,22 @@ class ReallocationDemo:
             self.update_threats(agent)
             self.update_positions()
             self.draw()
+            if self.recording:
+                recorder.add_frame()
 
             self.clock.tick(60)
             if end:
                 running = False
+
+        if self.recording:
+            print("Saving recording...")
+            recorder.save()
 
     def close(self):
         pygame.quit()
 
 
 if __name__ == "__main__":
-    from target_assign_rl.target_assign_agent import RuleAgent
-
     demo = ReallocationDemo()
     agent = RuleAgent(20)
 
