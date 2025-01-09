@@ -1,5 +1,6 @@
 import os
 import time
+from copy import deepcopy
 
 import numpy as np
 import pygame
@@ -19,6 +20,7 @@ class ReallocationDemo:
         grid_size: int = 40,
         cols: int = 25,
         rows: int = 20,
+        max_reallocation: int = 3,
         recording: bool = False,
         record_dir: str = "gifs",
         fps: int = 30,
@@ -42,6 +44,7 @@ class ReallocationDemo:
         self.MOVE_SPEED = 2  # pixels per frame
         self.REALLOCATION_INTERVAL = 100  # frames
         self.ATTACK_RANGE = 1 * self.grid_size
+        self.max_reallocation = max_reallocation
 
         pygame.init()
         self.screen = pygame.display.set_mode((self.width, self.height))
@@ -50,7 +53,8 @@ class ReallocationDemo:
         self.font = pygame.font.SysFont("SimHei", 24)
 
         self.env = raw_env(env_config)
-        self.threat_hist = []
+        self.state_hist = []
+        self.realloc_cnt = 0
         self.reset_simulation()
 
     @property
@@ -61,11 +65,18 @@ class ReallocationDemo:
     def building_start(self):
         return int(self.building_col * self.grid_size)
 
-    def reset_simulation(self):
+    def reset_simulation(self, state: dict = None):
         """Initialize a new strike mission"""
-        self.env.reset()
+        state = state or {}
+        if not state:
+            self.env.reset()
+        else:
+            for key, value in state.items():
+                setattr(self.env.unwrapped, key, value)
+
         self.frame_count = 0
-        self.threat_hist = [self.env.threat_levels.copy()]
+        self.realloc_cnt = 0
+        env_state = deepcopy(vars(self.env.unwrapped))
 
         # Initialize UAVs at left side
         self.uavs = []
@@ -85,7 +96,11 @@ class ReallocationDemo:
             )
 
         # Initialize threat state
-        self.window_mapping = np.random.permutation(self.rows)
+        window_map = state.get("window_mapping", None)
+        if window_map is not None:
+            self.window_mapping = window_map
+        else:
+            self.window_mapping = np.random.permutation(self.rows)
         self.window_threats = self.env.threat_levels[self.window_mapping]
         self.enemies = [
             {
@@ -112,6 +127,9 @@ class ReallocationDemo:
             )
             uav["current_row"] = uav["target_row"]
             uav["in_transition"] = False
+
+        env_state["window_mapping"] = self.window_mapping
+        self.state_hist = [env_state]
 
     def perform_allocation(self, agent: Agent = None):
         """Allocate UAVs to targets based on current threat levels"""
@@ -253,7 +271,7 @@ class ReallocationDemo:
             # Move forward if not in transition and not queued
             if not uav["in_transition"]:
                 # If this UAV is not the first in queue, adjust target position
-                if all(uav["status"] == "alive" for uav in row_uavs[:uav_index]):
+                if all(uav["status"] == "active" for uav in row_uavs[:uav_index]):
                     # Each subsequent UAV should stay one grid size behind the previous
                     desired_x = int(self.attack_x - (uav_index * self.grid_size))
 
@@ -284,8 +302,6 @@ class ReallocationDemo:
                 uav["entered"]
                 and self._is_reached(uav)
                 and all(uav["status"] != "active" for uav in row_uavs[:uav_index])
-                and (self.building_start - uav["pos"][0])
-                <= self.ATTACK_RANGE * (uav_index + 1)
             ):
                 self.handle_engagement(uav)
 
@@ -309,17 +325,37 @@ class ReallocationDemo:
 
         uav["pos"][0] = uav["target_pos"][0]
 
-    def update_threats(self, agent: Agent):
-        """Update threat distribution periodically"""
+    def update_threats(self, agent: Agent, state: dict = None):
+        """Update threat distribution periodically
+
+        Args:
+            agent (Agent): The agent to perform reallocation
+            state (dict, optional): The state to reset the environment. Defaults to None.
+
+        Returns:
+            bool: Whether reallocation is triggered
+        """
+        state = state or {}
+
         if (
             (self.frame_count % self.REALLOCATION_INTERVAL == 0)
             and (not self._is_approached())
             and (not any(uav["in_transition"] for uav in self.uavs))
+            and (self.realloc_cnt < self.max_reallocation)
         ):
-            # Generate new threat distribution
-            self.env.reset()
-            self.threat_hist.append(self.env.threat_levels.copy())
-            self.window_mapping = np.random.permutation(self.rows)
+            if not state:
+                self.env.reset()
+            else:
+                for key, value in state.items():
+                    setattr(self.env.unwrapped, key, value)
+
+            env_state = deepcopy(vars(self.env.unwrapped))
+            window_map = state.get("window_mapping", None)
+            if window_map is not None:
+                self.window_mapping = window_map
+            else:
+                self.window_mapping = np.random.permutation(self.rows)
+
             self.window_threats = self.env.threat_levels[self.window_mapping]
             self.enemies = [
                 {
@@ -334,6 +370,12 @@ class ReallocationDemo:
             ]
             # Trigger reallocation
             self.perform_allocation(agent)
+            self.realloc_cnt += 1
+            env_state["window_mapping"] = self.window_mapping
+            self.state_hist.append(env_state)
+            return True
+
+        return False
 
     def draw(self):
         """Draw current game state"""
@@ -441,7 +483,7 @@ class ReallocationDemo:
         spacing = 30
         text_offset = 30
         legend_width = 190
-        legend_height = 200
+        legend_height = 220
 
         # Calculate position from right side
         legend_x = self.screen.get_width() - legend_width
@@ -451,7 +493,7 @@ class ReallocationDemo:
         legend_background = pygame.Rect(
             legend_x - 5, legend_y - 5, legend_width, legend_height
         )
-        pygame.draw.rect(self.screen, (240, 240, 240), legend_background)
+        pygame.draw.rect(self.screen, (220, 220, 220), legend_background)
         pygame.draw.rect(self.screen, (100, 100, 100), legend_background, 1)
 
         # UAV (Red circle)
@@ -494,6 +536,7 @@ class ReallocationDemo:
 
         # Threat level colors
         threat_colors = [
+            (get_threat_color(0.0), "无威胁阵位"),
             (get_threat_color(0.1), "低威胁阵位"),
             (get_threat_color(0.4), "中威胁阵位"),
             (get_threat_color(0.8), "高威胁阵位"),
@@ -512,7 +555,7 @@ class ReallocationDemo:
             recorder = PygameRecord(
                 os.path.join(
                     self.record_dir,
-                    f"recording_{time.strftime('%Y%m%d-%H%M%S')}.gif",
+                    f"{type(agent).__name__}_{time.strftime('%Y%m%d-%H%M%S')}.gif",
                 ),
                 self.fps,
             )
@@ -537,16 +580,60 @@ class ReallocationDemo:
             print("Saving recording...")
             recorder.save()
 
+    def replay(self, agent: Agent, state_hist: list):
+        if self.recording:
+            recorder = PygameRecord(
+                os.path.join(
+                    self.record_dir,
+                    f"{type(agent).__name__}_{time.strftime('%Y%m%d-%H%M%S')}.gif",
+                ),
+                self.fps,
+            )
+
+        idx = 0
+        state = state_hist[idx]
+        self.reset_simulation(state)
+        idx = min(idx + 1, len(state_hist) - 1)
+
+        running = True
+        while running:
+            self.frame_count += 1
+            end = handle_events()
+
+            state = state_hist[idx]
+            if self.update_threats(agent, state):
+                idx = min(idx + 1, len(state_hist) - 1)
+
+            self.update_positions()
+            self.draw()
+            if self.recording:
+                recorder.add_frame()
+
+            self.clock.tick(60)
+            if end:
+                running = False
+
+        if self.recording:
+            print("Saving recording...")
+            recorder.save()
+
     def close(self):
         pygame.quit()
 
 
 if __name__ == "__main__":
-    demo = ReallocationDemo()
-    agent = RuleAgent(20)
+    from target_assign_rl.target_assign_agent import RandomAgent
+
+    demo = ReallocationDemo(recording=True, fps=60, max_reallocation=2)
+    agent1 = RuleAgent(20)
+    agent2 = RandomAgent(20)
 
     try:
         while True:
-            demo.run(agent)
+            demo.run(agent1)
+
+            # Replay with random agent
+            state_hist = demo.state_hist.copy()
+            demo.replay(agent2, state_hist)
     finally:
         demo.close()
