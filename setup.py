@@ -14,7 +14,7 @@ for doc in doc_files:
 
 setup(
     name="target_assign_rl",
-    version="0.1.0",
+    version="0.2.0",
     description="Target assignment using reinforcement learning",
     long_description=long_description,
     long_description_content_type="text/markdown",
